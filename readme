@@ -1,0 +1,192 @@
+# Sistema de Análise de Dados
+
+Programa em Python que lê um arquivo **CSV** com e-mail, CPF, telefone e data de nascimento, valida cada campo com **expressões regulares** (`re`) e regras de negócio, trata os erros mais comuns com **exceções** e gera um **relatório** com os registros válidos, os inválidos e estatísticas.
+
+Usa apenas a biblioteca padrão do Python (3.8 ou superior). Não é preciso instalar nada.
+
+## Arquivos do repositório
+
+| Arquivo | Função |
+|---|---|
+| `analise_dados.py` | Script principal: leitura, validações, exceções e relatório |
+| `dados.csv` | Arquivo de exemplo (dados fictícios, com acertos e erros de propósito) |
+| `test_analise_dados.py` | Testes automatizados (`unittest`) |
+| `README.md` | Este documento |
+
+## Como executar
+
+```bash
+python3 analise_dados.py                       # analisa dados.csv
+python3 analise_dados.py meus_dados.csv        # analisa outro arquivo
+python3 analise_dados.py dados.csv -o saida.txt
+python3 analise_dados.py dados.csv --data-referencia 13/10/2026
+python3 -m unittest -v                         # roda os testes
+```
+
+- O relatório é mostrado na tela e também gravado em `relatorio.txt` (ou no arquivo indicado em `-o`).
+- `--data-referencia` define a data usada para calcular as idades. Sem ela, vale a data de hoje, e por isso a idade média do relatório muda com o tempo.
+
+### Formato do arquivo de entrada
+
+- Cabeçalho com as colunas `email`, `cpf`, `telefone` e `data_nascimento` (obrigatórias) e, opcionalmente, `nome`. Maiúsculas e espaços no cabeçalho são ignorados.
+- Separador vírgula ou ponto e vírgula (o programa detecta sozinho, para aceitar CSVs exportados pelo Excel brasileiro).
+- Codificação UTF-8 (o BOM do Excel é aceito). Um arquivo `.txt` com esse mesmo formato também funciona.
+
+## Validações aplicadas e por quê
+
+Cada campo passa por **duas ou três camadas**: primeiro o formato (regex), depois uma checagem que o regex não consegue fazer.
+
+| Campo | Regex (resumo) | Camada extra | Justificativa |
+|---|---|---|---|
+| **E-mail** | `^[\w+-]+(\.[\w+-]+)*@` + domínio com rótulos separados por `\.` + `\.[A-Za-z]{2,}$` | tamanho máximo de 254 caracteres | Barra `a@@b.com`, `a@b` (sem final como `.com`), `@b.com` e pontos repetidos. Aceita `a.b+c@x.com.br`. |
+| **CPF** | `^(\d{3}\.\d{3}\.\d{3}-\d{2}\|\d{11})$` | cálculo dos **dois dígitos verificadores** e rejeição de repetidos (`111.111.111-11`) | O regex aceita `123.456.789-00`, que tem a forma certa mas não é um CPF possível. A alternância impede formatos misturados como `123.456789-00`. |
+| **Telefone** | `^(\+55\s?)?(\([1-9]\d\)\s?\|[1-9]\d\s?)(9\d{4}\|\d{4})-?\d{4}$` | — | Aceita `(11) 91234-5678`, `11912345678`, `(21) 3456-7890` e `+55 11 91234-5678`. Celular tem 9 dígitos começando em 9, fixo tem 8, e o DDD não começa com 0. Recusa parêntese aberto sem fechar. |
+| **Data** | `^(0[1-9]\|[12]\d\|3[01])/(0[1-9]\|1[0-2])/\d{4}$` | conversão com `datetime.strptime` e **regra de idade** (nascimento no passado e idade até 120 anos) | `31/04/1999` e `30/02/1992` têm a forma certa, mas só o calendário sabe que não existem. Datas no futuro ou com idade absurda quebram uma regra de negócio. |
+
+Decisões que valem destacar:
+
+- **Metacaracteres usados:** `^` e `$` (o valor inteiro precisa casar), `\d` (dígito), `\w` (letra, número ou `_`), `\s` (espaço), `\.` (ponto literal, porque `.` sozinho significa "qualquer caractere"), `?`, `*`, `+`, `{n}`, `[ ]` e `( | )`.
+- **`re.ASCII`:** sem ele, `\d` também casa dígitos de outros alfabetos (como os árabes), que não são números válidos para um CPF.
+- **`fullmatch` além de `^` e `$`:** em Python, `$` também casa antes de uma quebra de linha no final do texto, então `a@b.com\n` passaria. Com `fullmatch` o texto inteiro precisa casar. Isso foi descoberto pelos testes automatizados.
+- **Todos os erros de um registro são coletados**, em vez de parar no primeiro. Quem corrige a planilha vê tudo de uma vez.
+- **Limitações assumidas:** o regex de e-mail é um subconjunto prático do padrão real (não confirma que a caixa postal existe), o de telefone é brasileiro, e um CPF com dígitos corretos não prova que pertence a uma pessoa real.
+
+## Exceções tratadas
+
+| Exceção | Quando acontece | Como o programa reage |
+|---|---|---|
+| `FileNotFoundError` | O arquivo informado não existe | Mensagem clara, código de saída 1 |
+| `KeyError` | Falta uma coluna obrigatória no cabeçalho (inclui arquivo vazio) | Mensagem listando **todas** as colunas ausentes |
+| `ValueError` | `datetime.strptime` recebe uma data inexistente (`30/02/1992`) ou o argumento `--data-referencia` é inválido | Vira `FormatoInvalidoError` (com `raise ... from erro`, que preserva a causa) ou um erro de uso da linha de comando |
+| `UnicodeDecodeError` | O arquivo não está em UTF-8 | Mensagem pedindo UTF-8 |
+| `OSError` e `csv.Error` | Caminho é uma pasta, sem permissão, CSV malformado | Mensagem com o motivo |
+| `OSError` ao gravar | Não foi possível salvar o relatório | Aviso, e a análise continua (o relatório já saiu na tela) |
+
+### Exceções personalizadas
+
+Todas herdam de `Exception`, por meio de `ValidacaoError`, e guardam o `campo`, o `valor` e o `motivo` para o relatório:
+
+```text
+Exception
+└── ValidacaoError
+    ├── FormatoInvalidoError     (falhou no regex, campo vazio ou data inexistente)
+    ├── DocumentoInvalidoError   (dígitos verificadores do CPF não conferem)
+    └── IdadeInvalidaError       (data no futuro ou idade acima de 120 anos)
+```
+
+### Onde está cada bloco do `try`
+
+- **`try / except / else / finally`** completo em `main()`: o `except` trata os erros de arquivo, o `else` gera e salva o relatório (só roda se a leitura deu certo) e o `finally` imprime "Análise encerrada." em qualquer situação.
+- **`try / except / else`** em `validar_data_nascimento()` (a regra de idade só roda no `else`, depois de a conversão dar certo) e em `salvar_relatorio()`.
+
+Mensagens de erro de exemplo:
+
+```text
+$ python3 analise_dados.py nao_existe.csv
+Erro: o arquivo 'nao_existe.csv' não foi encontrado.
+Análise encerrada.
+
+$ python3 analise_dados.py sem_colunas.csv
+Erro: coluna obrigatória ausente no CSV: telefone, data_nascimento
+Análise encerrada.
+```
+
+## Exemplo de entrada (`dados.csv`)
+
+Os dados são **fictícios**. Os CPFs são números gerados só para teste.
+
+```csv
+nome,email,cpf,telefone,data_nascimento
+Ana Souza,ana.souza@email.com,529.982.247-25,(11) 91234-5678,15/03/1990
+Bruno Lima,bruno_lima@empresa.com.br,11144477735,11987654321,02/11/1985
+Carla Dias,carla.dias@@email.com,390.533.447-05,(21) 3456-7890,20/07/1998
+Diego Rocha,diego@email.com,123.456.789-00,(31) 99876-5432,10/10/2000
+Elisa Prado,elisa@email.com,168.995.350-09,12345,05/05/1995
+Fábio Nunes,fabio@email,111.111.111-11,(21) 99999-0000,14/02/1988
+Gabi Torres,gabi.torres@email.com,987.654.321-00,+55 (48) 98888-7777,30/02/1992
+Hugo Mendes,hugo.mendes@email.com,246.813.579-28,(51) 3222-1111,25/12/2030
+Iara Campos,iara@email.com,12345678909,11 98765-4321,01/01/1890
+"Souza, João",joao+news@email.com,135.792.468-28,+55 11 91111-2222,29/02/2000
+Karina Alves,,,(11) 3555-6666,31/04/1999
+Leo Prado,leo@email.com,864.209.753-10,(11) 3333-4444,07/08/2004
+Marina Reis,marina.reis@uol.com.br,975.310.864-84,(85) 98765-4321,18/09/1978
+```
+
+## Exemplo de saída
+
+Gerada com `python3 analise_dados.py dados.csv --data-referencia 13/10/2026`:
+
+```text
+======================================================================
+                    RELATÓRIO DE ANÁLISE DE DADOS                     
+======================================================================
+Arquivo analisado  : dados.csv
+Data de referência : 13/10/2026
+
+RESUMO
+  Total de registros : 13
+  Válidos            : 5 (38.5%)
+  Inválidos          : 8 (61.5%)
+
+REGISTROS VÁLIDOS (5)
+  [linha 2] Ana Souza (36 anos)
+      ana.souza@email.com | 529.982.247-25 | (11) 91234-5678 | 15/03/1990
+  [linha 3] Bruno Lima (40 anos)
+      bruno_lima@empresa.com.br | 111.444.777-35 | 11987654321 | 02/11/1985
+  [linha 11] Souza, João (26 anos)
+      joao+news@email.com | 135.792.468-28 | +55 11 91111-2222 | 29/02/2000
+  [linha 13] Leo Prado (22 anos)
+      leo@email.com | 864.209.753-10 | (11) 3333-4444 | 07/08/2004
+  [linha 14] Marina Reis (48 anos)
+      marina.reis@uol.com.br | 975.310.864-84 | (85) 98765-4321 | 18/09/1978
+
+REGISTROS INVÁLIDOS (8)
+  [linha 4] Carla Dias
+      - email: formato inválido, esperado nome@dominio.com (valor: 'carla.dias@@email.com')
+  [linha 5] Diego Rocha
+      - cpf: dígitos verificadores não conferem (valor: '123.456.789-00')
+  [linha 6] Elisa Prado
+      - telefone: formato inválido, esperado (11) 91234-5678 ou 1132345678 (valor: '12345')
+  [linha 7] Fábio Nunes
+      - email: formato inválido, esperado nome@dominio.com (valor: 'fabio@email')
+      - cpf: dígitos verificadores não conferem (valor: '111.111.111-11')
+  [linha 8] Gabi Torres
+      - data_nascimento: data inexistente no calendário (valor: '30/02/1992')
+  [linha 9] Hugo Mendes
+      - data_nascimento: data de nascimento no futuro (valor: '25/12/2030')
+  [linha 10] Iara Campos
+      - data_nascimento: idade de 136 anos acima do máximo (120) (valor: '01/01/1890')
+  [linha 12] Karina Alves
+      - email: campo obrigatório vazio (valor: '')
+      - cpf: campo obrigatório vazio (valor: '')
+      - data_nascimento: data inexistente no calendário (valor: '31/04/1999')
+
+ESTATÍSTICAS
+  Erros por campo:
+    email           : 3
+    cpf             : 3
+    telefone        : 1
+    data_nascimento : 4
+  Idade média (válidos): 34.4 anos
+  Mais novo : Leo Prado (22 anos)
+  Mais velho: Marina Reis (48 anos)
+======================================================================
+```
+
+## Publicar no GitHub como repositório público
+
+1. No GitHub, clique em **New repository**, dê um nome (por exemplo `analise-dados`) e escolha **Public**.
+2. Envie os arquivos: pelo site, use **uploading an existing file** e arraste os quatro arquivos; ou pelo terminal:
+
+   ```bash
+   git init
+   git add analise_dados.py dados.csv test_analise_dados.py README.md
+   git commit -m "Sistema de análise de dados com regex e exceções"
+   git branch -M main
+   git remote add origin https://github.com/SEU-USUARIO/analise-dados.git
+   git push -u origin main
+   ```
+
+3. Confira a visibilidade em **Settings → General → Danger Zone → Change repository visibility**. Para ter certeza, abra o link do repositório em uma janela anônima: se aparecer sem pedir login, está público.
+
+Importante: não suba arquivos com CPFs, e-mails ou telefones **reais** de pessoas. Dados pessoais são protegidos pela LGPD. Use sempre dados fictícios, como os do `dados.csv`.
