@@ -1,0 +1,154 @@
+"""Testes automatizados: python3 -m unittest -v"""
+
+import os
+import tempfile
+import unittest
+from datetime import date
+
+import analise_dados as ad
+
+HOJE = date(2026, 10, 13)
+
+
+class TestEmail(unittest.TestCase):
+    def test_validos(self):
+        for texto in ("ana@email.com", "a.b+c@sub.dominio.com.br",
+                      "x_y-z@uol.com.br"):
+            self.assertEqual(ad.validar_email(texto), texto.lower())
+
+    def test_invalidos(self):
+        for texto in ("", "ana@email", "ana@@email.com", "@email.com",
+                      "ana@.com", "ana..x@email.com", "ana @email.com",
+                      "ana@email.c", "ana@email.com\n"):
+            with self.assertRaises(ad.FormatoInvalidoError, msg=texto):
+                ad.validar_email(texto)
+
+
+class TestCpf(unittest.TestCase):
+    def test_validos_formatados_e_sem_formato(self):
+        self.assertEqual(ad.validar_cpf("52998224725"), "529.982.247-25")
+        self.assertEqual(ad.validar_cpf("529.982.247-25"), "529.982.247-25")
+
+    def test_formato_invalido(self):
+        for texto in ("", "529.982.24725", "529982.247-25", "1234567890",
+                      "abc.def.ghi-jk"):
+            with self.assertRaises(ad.FormatoInvalidoError, msg=texto):
+                ad.validar_cpf(texto)
+
+    def test_digitos_verificadores(self):
+        for texto in ("123.456.789-00", "111.111.111-11"):
+            with self.assertRaises(ad.DocumentoInvalidoError, msg=texto):
+                ad.validar_cpf(texto)
+
+
+class TestTelefone(unittest.TestCase):
+    def test_validos(self):
+        for texto in ("(11) 91234-5678", "(11)91234-5678", "11912345678",
+                      "1132345678", "(21) 3456-7890", "+55 11 91234-5678",
+                      "+5511912345678"):
+            self.assertEqual(ad.validar_telefone(texto), texto)
+
+    def test_invalidos(self):
+        for texto in ("", "12345", "(11 91234-5678", "11 1234-567",
+                      "(01) 91234-5678", "abc", "(11) 81234-56789"):
+            with self.assertRaises(ad.FormatoInvalidoError, msg=texto):
+                ad.validar_telefone(texto)
+
+
+class TestData(unittest.TestCase):
+    def test_valida_e_bissexto(self):
+        self.assertEqual(
+            ad.validar_data_nascimento("29/02/2000", HOJE), date(2000, 2, 29)
+        )
+
+    def test_formato_e_calendario(self):
+        for texto in ("", "2000-02-29", "1/1/2000", "32/01/2000",
+                      "10/13/2000", "30/02/1992", "31/04/1999",
+                      "29/02/2001"):
+            with self.assertRaises(ad.FormatoInvalidoError, msg=texto):
+                ad.validar_data_nascimento(texto, HOJE)
+
+    def test_idade_invalida(self):
+        for texto in ("25/12/2030", "01/01/1890", "13/10/1905"):
+            with self.assertRaises(ad.IdadeInvalidaError, msg=texto):
+                ad.validar_data_nascimento(texto, HOJE)
+
+    def test_limites_de_idade(self):
+        # exatamente 120 anos hoje ainda é aceito; amanhã faria 121
+        self.assertEqual(
+            ad.validar_data_nascimento("13/10/1906", date(2026, 10, 12)),
+            date(1906, 10, 13),
+        )
+        self.assertEqual(ad.calcular_idade(date(2000, 10, 14), HOJE), 25)
+        self.assertEqual(ad.calcular_idade(date(2000, 10, 13), HOJE), 26)
+
+
+class TestArquivo(unittest.TestCase):
+    def escrever(self, conteudo, codificacao="utf-8"):
+        arquivo = tempfile.NamedTemporaryFile(
+            "w", suffix=".csv", delete=False, encoding=codificacao,
+            newline="",
+        )
+        arquivo.write(conteudo)
+        arquivo.close()
+        self.addCleanup(os.remove, arquivo.name)
+        return arquivo.name
+
+    def test_arquivo_inexistente(self):
+        with self.assertRaises(FileNotFoundError):
+            ad.analisar_arquivo("nao_existe.csv", HOJE)
+
+    def test_coluna_ausente(self):
+        caminho = self.escrever("nome,email,cpf\nAna,a@b.com,1\n")
+        with self.assertRaises(KeyError) as contexto:
+            ad.analisar_arquivo(caminho, HOJE)
+        self.assertEqual(contexto.exception.args[0],
+                         "telefone, data_nascimento")
+
+    def test_arquivo_vazio(self):
+        with self.assertRaises(KeyError):
+            ad.analisar_arquivo(self.escrever(""), HOJE)
+
+    def test_ponto_e_virgula_cabecalho_com_espacos_e_bom(self):
+        conteudo = (
+            "﻿Nome; Email ;CPF;Telefone;Data_Nascimento\n"
+            "Ana;ana@email.com;52998224725;11912345678;15/03/1990\n"
+        )
+        resultado = ad.analisar_arquivo(self.escrever(conteudo), HOJE)
+        self.assertEqual(len(resultado.validos), 1)
+        self.assertEqual(resultado.validos[0].idade, 36)
+
+    def test_linha_curta_vira_invalida_sem_quebrar(self):
+        conteudo = "email,cpf,telefone,data_nascimento\nana@email.com\n"
+        resultado = ad.analisar_arquivo(self.escrever(conteudo), HOJE)
+        self.assertEqual(len(resultado.invalidos), 1)
+        self.assertEqual(len(resultado.invalidos[0].erros), 3)
+
+    def test_nao_utf8(self):
+        caminho = self.escrever(
+            "email,cpf,telefone,data_nascimento\nçã\n", "latin-1"
+        )
+        with self.assertRaises(UnicodeDecodeError):
+            ad.analisar_arquivo(caminho, HOJE)
+
+    def test_dados_de_exemplo(self):
+        base = os.path.dirname(os.path.abspath(__file__))
+        resultado = ad.analisar_arquivo(
+            os.path.join(base, "dados.csv"), HOJE
+        )
+        self.assertEqual(len(resultado.validos), 5)
+        self.assertEqual(len(resultado.invalidos), 8)
+        self.assertEqual(
+            [r.linha for r in resultado.validos], [2, 3, 11, 13, 14]
+        )
+
+    def test_relatorio_sem_registros_nao_divide_por_zero(self):
+        caminho = self.escrever("email,cpf,telefone,data_nascimento\n")
+        resultado = ad.analisar_arquivo(caminho, HOJE)
+        texto = ad.gerar_relatorio(resultado)
+        self.assertIn("Total de registros : 0", texto)
+        self.assertIn("0.0%", texto)
+
+
+if __name__ == "__main__":
+    unittest.main()
